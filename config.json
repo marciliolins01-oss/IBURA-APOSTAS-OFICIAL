@@ -1,0 +1,40 @@
+{
+  "brand_name": "Colombia",
+  "accent_color": 15538998,
+  "rules_title": "📢 REGRAS PADRÃO - LEIA ANTES DE JOGAR",
+  "rules": [
+    "Armas: apenas FULL UMP e XM8",
+    "1º round: apenas Desert",
+    "Proibido mobilador nas filas mobile",
+    "Proibido tela parada",
+    "Proibido bug de kit"
+  ],
+  "rules_footer": "Mais agilidade e menos discussões antes das filas.",
+  "payment_notice": "UTILIZE PAGO NOME SOBRENOME PRA VALIDAR SEU PAGAMENTO AUTOMATICAMENTE",
+  "pix_key": "",
+  "pix_type": "E-mail",
+  "pix_qr_image_url": "",
+  "queue_embed_image_url": "",
+  "registration_fee": "R$ 1,00",
+  "owner_role_id": 0,
+  "mediator_role_id": 0,
+  "guild_mediator_role_ids": {
+    "1469600760911368236": 1469600761347571830
+  },
+  "support_role_id": 0,
+  "log_channel_id": 0,
+  "log_queue_channel_id": 0,
+  "log_bets_channel_id": 0,
+  "log_bets_open_channel_id": 1469679235970109462,
+  "log_bets_closed_channel_id": 1562177109399572570,
+  "log_bets_confirmed_channel_id": 1469679342974926848,
+  "log_bets_finalized_channel_id": 1469679367453020271,
+  "log_match_channel_id": 0,
+  "log_mediator_channel_id": 0,
+  "log_blacklist_channel_id": 0,
+  "log_admin_channel_id": 0,
+  "bets_enabled": true,
+  "blacklist_channel_id": 0,
+  "bets_category_id": 0,
+  "mediator_category_id": 0
+}
