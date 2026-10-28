@@ -1123,23 +1123,24 @@ async def fila(interaction: discord.Interaction, formato: str, plataforma: str, 
     with db() as conn: conn.execute('UPDATE matches SET message_id=? WHERE id=?', (msg.id, match_id))
     audit(interaction.guild_id, interaction.user.id, 'bet_opened', f'match_id={match_id}; public_channel={interaction.channel_id}; formato={formato}; valor={valor}')
 
-@tasks.loop(minutes=30)
+@tasks.loop(minutes=1)
 async def queue_refresh_loop():
-    """Atualiza a mensagem da fila existente e avisa @everyone a cada 30 minutos."""
+    """Garante que exista uma mensagem pública para a fila aberta e a mantém atualizada."""
     if not bot.is_ready():
         return
 
-    # Uma fila aberta por servidor: reutiliza a mensagem já publicada, sem criar outra.
+    # Inclui filas sem message_id: elas podem ter sido criadas no banco antes
+    # de o envio da mensagem falhar. Nesse caso, a mensagem será publicada aqui.
     with db() as conn:
         guild_ids = [r['guild_id'] for r in conn.execute(
-            "SELECT DISTINCT guild_id FROM matches WHERE status='waiting' AND message_id IS NOT NULL"
+            "SELECT DISTINCT guild_id FROM matches WHERE status='waiting'"
         ).fetchall()]
 
     for guild_id in guild_ids:
         try:
             with db() as conn:
                 row = conn.execute(
-                    "SELECT * FROM matches WHERE guild_id=? AND status='waiting' AND message_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    "SELECT * FROM matches WHERE guild_id=? AND status='waiting' ORDER BY id DESC LIMIT 1",
                     (guild_id,)
                 ).fetchone()
             if not row:
@@ -1149,32 +1150,52 @@ async def queue_refresh_loop():
             if channel is None:
                 try:
                     channel = await bot.fetch_channel(int(row['channel_id']))
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                    print(f'[fila automática] Não consegui acessar o canal {row["channel_id"]}: {exc}')
                     continue
             if not isinstance(channel, discord.TextChannel):
                 continue
 
-            try:
-                message = await channel.fetch_message(int(row['message_id']))
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                continue
-
-            # Atualiza a própria mensagem da fila, mantendo o mesmo ID e os botões.
             view = QueueView(int(row['id']))
             embed = view.make_embed(row)
-            embed.set_footer(text='Fila atualizada automaticamente • Aguardando jogadores')
-            await message.edit(embed=embed, view=view)
+            embed.set_footer(text='Fila aberta • Entre pelos botões abaixo')
+            message = None
+            message_id = int(row['message_id'] or 0)
 
-            # A menção é enviada em mensagem separada porque editar uma mensagem não dispara novo ping.
+            if message_id:
+                try:
+                    message = await channel.fetch_message(message_id)
+                except discord.NotFound:
+                    # A mensagem foi apagada: recria a fila abaixo.
+                    message = None
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    print(f'[fila automática] Não consegui verificar a mensagem {message_id}: {exc}')
+                    continue
+
+            newly_published = message is None
+            if newly_published:
+                # Publica de fato a fila com embed e botões; não fica só no ping.
+                message = await channel.send(embed=embed, view=view)
+                with db() as conn:
+                    conn.execute('UPDATE matches SET message_id=? WHERE id=?', (message.id, row['id']))
+                audit(int(guild_id), None, 'queue_auto_republished', f'match_id={row["id"]}; channel_id={channel.id}; message_id={message.id}')
+            else:
+                # Atualiza a mensagem existente sem criar duplicatas.
+                await message.edit(embed=embed, view=view)
+
             perms = channel.permissions_for(channel.guild.me)
-            if perms.send_messages and perms.mention_everyone:
+            ping_sent = False
+            # @everyone apenas quando a fila realmente precisou ser (re)publicada;
+            # assim o loop de 1 minuto não vira spam de menções.
+            if newly_published and perms.send_messages and perms.mention_everyone:
                 await channel.send(
                     content='@everyone 🔔 **A fila está aberta!** Entre na fila neste canal e clique em **Entrar na Fila**.',
                     allowed_mentions=discord.AllowedMentions(everyone=True)
                 )
-            audit(int(guild_id), None, 'queue_auto_refresh', f'match_id={row["id"]}; channel_id={channel.id}; everyone_ping={bool(perms.send_messages and perms.mention_everyone)}')
+                ping_sent = True
+            audit(int(guild_id), None, 'queue_auto_refresh', f'match_id={row["id"]}; channel_id={channel.id}; message_id={message.id}; everyone_ping={ping_sent}')
         except (discord.Forbidden, discord.HTTPException, RuntimeError) as exc:
-            print(f'[fila automática] Não foi possível atualizar/avisar no servidor {guild_id}: {exc}')
+            print(f'[fila automática] Não foi possível publicar/atualizar/avisar no servidor {guild_id}: {exc}')
 
 @queue_refresh_loop.before_loop
 async def before_queue_refresh_loop():
