@@ -9,7 +9,7 @@ from typing import Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -936,6 +936,9 @@ async def registrar_receita(interaction: discord.Interaction, mediador: discord.
 @bot.event
 async def on_ready():
     print(f'Conectado como {bot.user} ({bot.user.id})')
+    # Evita iniciar o mesmo loop novamente quando o Discord reconectar.
+    if not queue_refresh_loop.is_running():
+        queue_refresh_loop.start()
 
 @bot.tree.command(name='painel', description='Publica o painel administrativo do bot.')
 async def painel(interaction: discord.Interaction):
@@ -1119,6 +1122,63 @@ async def fila(interaction: discord.Interaction, formato: str, plataforma: str, 
     msg = await interaction.channel.send(embed=embed, view=QueueView(match_id))
     with db() as conn: conn.execute('UPDATE matches SET message_id=? WHERE id=?', (msg.id, match_id))
     audit(interaction.guild_id, interaction.user.id, 'bet_opened', f'match_id={match_id}; public_channel={interaction.channel_id}; formato={formato}; valor={valor}')
+
+@tasks.loop(minutes=30)
+async def queue_refresh_loop():
+    """Atualiza a mensagem da fila existente e avisa @everyone a cada 30 minutos."""
+    if not bot.is_ready():
+        return
+
+    # Uma fila aberta por servidor: reutiliza a mensagem já publicada, sem criar outra.
+    with db() as conn:
+        guild_ids = [r['guild_id'] for r in conn.execute(
+            "SELECT DISTINCT guild_id FROM matches WHERE status='waiting' AND message_id IS NOT NULL"
+        ).fetchall()]
+
+    for guild_id in guild_ids:
+        try:
+            with db() as conn:
+                row = conn.execute(
+                    "SELECT * FROM matches WHERE guild_id=? AND status='waiting' AND message_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    (guild_id,)
+                ).fetchone()
+            if not row:
+                continue
+
+            channel = bot.get_channel(int(row['channel_id']))
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(int(row['channel_id']))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    continue
+            if not isinstance(channel, discord.TextChannel):
+                continue
+
+            try:
+                message = await channel.fetch_message(int(row['message_id']))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                continue
+
+            # Atualiza a própria mensagem da fila, mantendo o mesmo ID e os botões.
+            view = QueueView(int(row['id']))
+            embed = view.make_embed(row)
+            embed.set_footer(text='Fila atualizada automaticamente • Aguardando jogadores')
+            await message.edit(embed=embed, view=view)
+
+            # A menção é enviada em mensagem separada porque editar uma mensagem não dispara novo ping.
+            perms = channel.permissions_for(channel.guild.me)
+            if perms.send_messages and perms.mention_everyone:
+                await channel.send(
+                    content='@everyone 🔔 **A fila está aberta!** Entre na fila neste canal e clique em **Entrar na Fila**.',
+                    allowed_mentions=discord.AllowedMentions(everyone=True)
+                )
+            audit(int(guild_id), None, 'queue_auto_refresh', f'match_id={row["id"]}; channel_id={channel.id}; everyone_ping={bool(perms.send_messages and perms.mention_everyone)}')
+        except (discord.Forbidden, discord.HTTPException, RuntimeError) as exc:
+            print(f'[fila automática] Não foi possível atualizar/avisar no servidor {guild_id}: {exc}')
+
+@queue_refresh_loop.before_loop
+async def before_queue_refresh_loop():
+    await bot.wait_until_ready()
 
 class BlacklistLookupModal(discord.ui.Modal, title='Verificação de ID na Blacklist'):
     player_id = discord.ui.TextInput(
